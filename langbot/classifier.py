@@ -74,7 +74,7 @@ def _unknown_classification() -> Runnable:
 
 
 def _load_examples() -> list[dict]:
-    path = Path(__file__).with_name("classifier_examples.json")
+    path = Path(__file__).resolve().parent / "prompts" / "classifier_examples.json"
     with path.open(encoding="utf-8") as f:
         examples_by_category = json.load(f)
 

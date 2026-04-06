@@ -11,6 +11,13 @@ class RequestType(StrEnum):
     unknown = auto()
 
 
+class Character(StrEnum):
+    friendly = auto()
+    professional = auto()
+    sarcastic = auto()
+    pirate = auto()
+
+
 class Classification(BaseModel):
     request_type: RequestType = Field(
         description=cleandoc("""

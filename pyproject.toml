@@ -21,6 +21,9 @@ langbot = "langbot.cli:main"
 [tool.setuptools.packages.find]
 include = ["langbot"]
 
+[tool.setuptools.package-data]
+langbot = ["prompts/*.json"]
+
 [dependency-groups]
 lint = [
     "ruff>=0.15.0",
