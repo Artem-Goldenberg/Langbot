@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "langbot"
+version = "0.1.0"
+description = "Small Python CLI bot project."
+requires-python = ">=3.12"
+dependencies = [
+    "langchain>=1.2.9",
+    "langchain-community>=0.4.1",
+    "langchain-core>=1.2.9",
+    "langchain-openai>=1.1.8",
+    "dotenv>=0.9.9",
+]
+
+[project.scripts]
+langbot = "langbot.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["langbot"]
+
+[dependency-groups]
+lint = [
+    "ruff>=0.15.0",
+    "pyright>=1.1.407",
+]
+test = [
+    "pytest>=9.0.2",
+]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+include = ["langbot"]

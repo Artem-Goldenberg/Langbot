@@ -1,0 +1,12 @@
+.DS_Store
+.venv/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.pyright/
+*.pyc
+*.pyo
+*.pyd
+*.sublime-project
+*.sublime-workspace
