@@ -1,31 +1,41 @@
 import json
+from operator import itemgetter
 from pathlib import Path
+from typing import Any
 
 from langchain.chat_models import BaseChatModel
 from langchain_core.exceptions import OutputParserException
+from langchain_core.messages import AIMessage
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate, FewShotChatMessagePromptTemplate
-from langchain_core.runnables import Runnable, RunnableLambda
-
+from langchain_core.runnables import (
+    Runnable, RunnablePassthrough, RunnableLambda,
+)
 from langbot.models import Classification, RequestType
 
 
-def classifier(model: BaseChatModel) -> Runnable:
+def classifier_chain(model: BaseChatModel) -> Runnable:
     """Build a classification chain with native structured output or fallback to a parser."""
 
     # Prefer native structured output when the model/provider supports it.
     structured_model = _structured_output_runnable(model)
     if structured_model is not None:
         prompt = _build_prompt()
-        return prompt | structured_model
+        return prompt | structured_model | {
+            "raw": itemgetter("raw"),
+            "parsed": lambda data: data["parsed"] or _unknown_classification()
+        }
 
     # Fallback for models without native schema enforcement.
     parser = PydanticOutputParser(pydantic_object=Classification).with_fallbacks(
-        [_unknown_classification()],
+        [RunnableLambda(_unknown_classification)],
         exceptions_to_handle=(OutputParserException,),
     )
     prompt = _build_prompt(parser.get_format_instructions())
-    return prompt | model | parser
+    return prompt | model | {
+        "raw": RunnablePassthrough(),
+        "parsed": parser,
+    }
 
 
 def _build_prompt(format_instructions: str | None = None) -> ChatPromptTemplate:
@@ -58,18 +68,16 @@ def _build_prompt(format_instructions: str | None = None) -> ChatPromptTemplate:
 
 def _structured_output_runnable(model: BaseChatModel) -> Runnable | None:
     try:
-        return model.with_structured_output(Classification)
+        return model.with_structured_output(Classification, include_raw=True)
     except NotImplementedError:
         return None
 
 
-def _unknown_classification() -> Runnable:
-    return RunnableLambda(
-        lambda _: Classification(
-            request_type=RequestType.unknown,
-            confidence=0.5,
-            reasoning="Ошибка парсинга ответа модели",
-        )
+def _unknown_classification(_=None) -> Classification:
+    return Classification(
+        request_type=RequestType.unknown,
+        confidence=0.5,
+        reasoning="Ошибка парсинга ответа модели",
     )
 
 
