@@ -5,11 +5,9 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable
 from pathlib import Path
-from typing import cast
 
 import openai
 from dotenv import load_dotenv
-from langchain.chat_models import BaseChatModel
 from langchain_community.cache import SQLAlchemyCache
 from langchain_core.globals import set_llm_cache
 from langchain_openai import ChatOpenAI
@@ -100,11 +98,8 @@ def create_bot(
     character: Character,
     memory: MemoryType,
 ) -> Bot:
-    model = cast(
-        BaseChatModel,
-        ChatOpenAI(model=model_name).with_retry(
-            retry_if_exception_type=RETRIABLE_EXCEPTIONS
-        ),
+    model = ChatOpenAI(model=model_name).with_retry(
+        retry_if_exception_type=RETRIABLE_EXCEPTIONS
     )
     return Bot(model, character=character, memory=memory)
 

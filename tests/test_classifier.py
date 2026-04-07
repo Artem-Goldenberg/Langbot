@@ -42,6 +42,17 @@ class ExplodingFakeModel(FakeListChatModel):
         raise RuntimeError("boom")
 
 
+class ExplodingStructuredOutputModel(StructuredOutputFakeModel):
+    def with_structured_output(
+        self,
+        schema: dict[str, Any] | type,
+        *,
+        include_raw: bool = False,
+        **kwargs: Any,
+    ):
+        return RunnableLambda(lambda _: (_ for _ in ()).throw(RuntimeError("boom")))
+
+
 def test_classifier_uses_structured_output_when_supported():
     model = StructuredOutputFakeModel(responses=["unused"])
 
@@ -57,6 +68,53 @@ def test_classifier_uses_structured_output_when_supported():
         "output_tokens": 2,
         "total_tokens": 5,
     }
+
+
+def test_classifier_uses_structured_output_through_retry_wrapper():
+    model = StructuredOutputFakeModel(responses=["unused"]).with_retry(
+        retry_if_exception_type=(RuntimeError,)
+    )
+
+    result = classifier_chain(model).invoke({"input": "Почему небо голубое?"})
+
+    assert result["parsed"] == Classification(
+        request_type=RequestType.question,
+        confidence=0.99,
+        reasoning="Classification",
+    )
+
+
+def test_classifier_preserves_fallbacks_for_structured_output_models():
+    model = ExplodingStructuredOutputModel(responses=["unused"]).with_fallbacks(
+        [StructuredOutputFakeModel(responses=["unused"])]
+    )
+
+    result = classifier_chain(model).invoke({"input": "Почему небо голубое?"})
+
+    assert result["parsed"] == Classification(
+        request_type=RequestType.question,
+        confidence=0.99,
+        reasoning="Classification",
+    )
+
+
+def test_classifier_chooses_strategy_independently_for_each_fallback():
+    model = ExplodingStructuredOutputModel(responses=["unused"]).with_fallbacks(
+        [FakeListChatModel(responses=[
+            '{"request_type":"small_talk","confidence":0.8,"reasoning":"parsed"}'
+        ])]
+    )
+
+    result = classifier_chain(model).invoke({"input": "Привет"})
+
+    assert result["parsed"] == Classification(
+        request_type=RequestType.small_talk,
+        confidence=0.8,
+        reasoning="parsed",
+    )
+    assert result["raw"].content == (
+        '{"request_type":"small_talk","confidence":0.8,"reasoning":"parsed"}'
+    )
 
 
 def test_classifier_returns_unknown_when_parser_cannot_parse():

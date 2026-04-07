@@ -3,7 +3,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from langchain.chat_models import BaseChatModel
 from langchain_core.chat_history import InMemoryChatMessageHistory
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -36,11 +35,11 @@ class Bot:
 
     def __init__(
         self,
-        model: BaseChatModel,
+        model: Runnable[Any, AIMessage],
         *,
         character: Character = Character.friendly,
         memory: MemoryType = MemoryType.buffer,
-        classifier_model: BaseChatModel | None = None
+        classifier_model: Runnable[Any, AIMessage] | None = None
     ):
         self.character = character
         self.memory = memory

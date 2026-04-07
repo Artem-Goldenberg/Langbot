@@ -5,17 +5,28 @@ from typing import Any
 
 from langchain.chat_models import BaseChatModel
 from langchain_core.exceptions import OutputParserException
-from langchain_core.messages import AIMessage
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate, FewShotChatMessagePromptTemplate
 from langchain_core.runnables import (
     Runnable, RunnablePassthrough, RunnableLambda,
 )
+from langchain_core.runnables.base import RunnableBindingBase
+from langchain_core.runnables.fallbacks import RunnableWithFallbacks
 from langbot.models import Classification, RequestType
 
 
-def classifier_chain(model: BaseChatModel) -> Runnable:
+def classifier_chain(model: Runnable) -> Runnable:
     """Build a classification chain with native structured output or fallback to a parser."""
+
+    if isinstance(model, RunnableWithFallbacks):
+        # Each fallback branch needs its own classifier pipeline so native
+        # structured output vs parser fallback is decided per model, not once
+        # for the whole fallback stack.
+        return classifier_chain(model.runnable).with_fallbacks(
+            [classifier_chain(fallback) for fallback in model.fallbacks],
+            exceptions_to_handle=model.exceptions_to_handle,
+            exception_key=model.exception_key,
+        )
 
     # Prefer native structured output when the model/provider supports it.
     structured_model = _structured_output_runnable(model)
@@ -66,11 +77,27 @@ def _build_prompt(format_instructions: str | None = None) -> ChatPromptTemplate:
     return prompt
 
 
-def _structured_output_runnable(model: BaseChatModel) -> Runnable | None:
-    try:
-        return model.with_structured_output(Classification, include_raw=True)
-    except NotImplementedError:
-        return None
+def _structured_output_runnable(model: Runnable) -> Runnable | None:
+    # LangChain wrappers like `.with_retry()` return binding-based runnables
+    # (for example `RunnableRetry`) that no longer expose chat-model methods such
+    # as `.with_structured_output()`. For native-structured detection on a single
+    # model branch, unwrap retry-like bindings, build the structured runnable on
+    # the underlying chat model, then rebuild the same binding stack around it.
+    # Fallback stacks are handled one level up in `classifier_chain()` so each
+    # fallback branch can choose native-vs-parser independently.
+    if isinstance(model, RunnableBindingBase):
+        structured_bound = _structured_output_runnable(model.bound)
+        if structured_bound is None:
+            return None
+        return model.model_copy(update={"bound": structured_bound})
+
+    if isinstance(model, BaseChatModel):
+        try:
+            return model.with_structured_output(Classification, include_raw=True)
+        except NotImplementedError:
+            return None
+
+    return None
 
 
 def _unknown_classification(_=None) -> Classification:
