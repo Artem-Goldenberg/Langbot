@@ -14,7 +14,7 @@ from langbot.models import AssistanceResponse, Character, RequestType, ResponseC
 class StubBot:
     def __init__(self):
         self.character = Character.friendly
-        self.memory = MemoryType.buffer
+        self.memory_type = MemoryType.buffer
         self.history = ["u1", "a1"]
         self.stream_process_calls: list[str] = []
         self.cleared = False
@@ -27,7 +27,7 @@ class StubBot:
         self.character = new_character
 
     def switch_memory(self, new_memory: MemoryType):
-        self.memory = new_memory
+        self.memory_type = new_memory
 
     def stream_process(self, text: str):
         self.stream_process_calls.append(text)
@@ -72,7 +72,7 @@ def test_handle_command_updates_character_memory_and_status():
     assert handle_command("/status", bot, output_fn=outputs.append) is False
 
     assert bot.character == Character.pirate
-    assert bot.memory == MemoryType.summary
+    assert bot.memory_type == MemoryType.summary
     assert outputs == [
         "✓ Характер изменён на: pirate",
         "✓ Память изменена на: summary",

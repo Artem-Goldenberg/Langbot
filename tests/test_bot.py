@@ -3,13 +3,24 @@ from pathlib import Path
 
 import pytest
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
-from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage
+from langchain_core.outputs import (
+    ChatGeneration,
+    ChatGenerationChunk,
+    ChatResult,
+)
 from langchain_core.runnables import RunnableLambda
 from pydantic import PrivateAttr
 
-from langbot.bot import Bot
-from langbot.models import Character, Classification, RequestType, ResponseChunk, ResponseComplete, ResponseStart
+from langbot.bot import Bot, MemoryType
+from langbot.models import (
+    Character,
+    Classification,
+    RequestType,
+    ResponseChunk,
+    ResponseComplete,
+    ResponseStart,
+)
 
 
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "langbot" / "prompts"
@@ -22,14 +33,15 @@ def _load_json(filename: str) -> dict[str, str]:
 
 REQUEST_PROMPTS = _load_json("request_prompts.json")
 CHARACTER_PROMPTS = _load_json("character_prompts.json")
-
-
 class RecordingFakeModel(FakeListChatModel):
     _seen_calls: list[list] = PrivateAttr(default_factory=list)
 
     @property
     def seen_calls(self) -> list[list]:
         return self._seen_calls
+
+    def get_num_tokens_from_messages(self, messages) -> int:
+        return sum(len(str(message.content).split()) for message in messages)
 
     def _call(self, *args, **kwargs):
         self._seen_calls.append(list(args[0]))
@@ -273,3 +285,71 @@ def test_bot_stream_process_supports_block_content():
     assert events[3].response.content == "hello world"
     assert [type(message) for message in bot.history] == [HumanMessage, AIMessage]
     assert bot.history[-1].content == "hello world"
+
+
+def test_bot_buffer_memory_keeps_only_recent_messages():
+    model = RecordingFakeModel(
+        responses=["first response", "second response", "third response"]
+    )
+    classifier_model = FixedClassificationModel(
+        Classification(
+            request_type=RequestType.question,
+            confidence=0.99,
+            reasoning="fixed",
+        )
+    )
+    bot = Bot(
+        model,
+        memory_type=MemoryType.buffer,
+        classifier_model=classifier_model,
+        max_context_tokens=4,
+    )
+
+    bot.process("first input")
+    bot.process("second input")
+    bot.process("third input")
+
+    assert [message.content for message in model.seen_calls[2]] == [
+        f"{CHARACTER_PROMPTS[Character.friendly]}\n\n"
+        f"{REQUEST_PROMPTS[RequestType.question]}",
+        "second input",
+        "second response",
+        "third input",
+    ]
+
+
+def test_bot_summary_memory_uses_dedicated_summary_chain():
+    model = RecordingFakeModel(responses=["first response", "second response"])
+    summary_model = RecordingFakeModel(responses=["summary of first turn"])
+    classifier_model = FixedClassificationModel(
+        Classification(
+            request_type=RequestType.question,
+            confidence=0.99,
+            reasoning="fixed",
+        )
+    )
+    bot = Bot(
+        model,
+        memory_type=MemoryType.summary,
+        classifier_model=classifier_model,
+        summary_model=summary_model,
+        max_context_tokens=3,
+    )
+
+    bot.process("first input")
+    bot.process("second input")
+
+    assert [message.content for message in summary_model.seen_calls[0]] == [
+        "Ты сжимаешь историю диалога в короткую рабочую сводку для ассистента. "
+        "Сохраняй факты, задачи, предпочтения пользователя, обещания и открытые "
+        "вопросы. Пиши кратко, без вводных фраз и без выдуманных деталей.",
+        "first input",
+        "first response",
+    ]
+    assert model.seen_calls[1][0].content == (
+        f"{CHARACTER_PROMPTS[Character.friendly]}\n\n"
+        f"{REQUEST_PROMPTS[RequestType.question]}\n\n"
+        "Краткая сводка предыдущего диалога:\nsummary of first turn"
+    )
+    assert [message.content for message in model.seen_calls[1][1:]] == ["second input"]
+    assert [type(message) for message in bot.history] == [HumanMessage, AIMessage]

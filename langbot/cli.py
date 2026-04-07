@@ -45,7 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Интерактивный CLI для langbot.",
         add_help=False,
     )
-    memory_choices = [memory.name for memory in MemoryType]
+    memory_choices = [memory.value for memory in MemoryType]
     parser._optionals.title = "Опции"
     parser.add_argument(
         "-h",
@@ -88,7 +88,7 @@ def main() -> int:
     bot = create_bot(
         model_name=args.model,
         character=args.character,
-        memory=args.memory,
+        memory_type=args.memory,
     )
     print_welcome(bot)
     return run_cli(bot)
@@ -98,12 +98,12 @@ def create_bot(
     *,
     model_name: str,
     character: Character,
-    memory: MemoryType,
+    memory_type: MemoryType,
 ) -> Bot:
     model = ChatOpenAI(model=model_name).with_retry(
         retry_if_exception_type=RETRIABLE_EXCEPTIONS
     )
-    return Bot(model, character=character, memory=memory)
+    return Bot(model, character=character, memory_type=memory_type)
 
 
 def configure_llm_cache(cache_db: str | None) -> None:
@@ -192,13 +192,13 @@ def handle_command(command_line: str, bot: Bot, *, output_fn: OutputFn) -> bool:
             output_fn(_invalid_memory_message())
             return False
         bot.switch_memory(memory)
-        output_fn(f"✓ Память изменена на: {memory.name}")
+        output_fn(f"✓ Память изменена на: {memory.value}")
         return False
 
     if command == "/status":
         output_fn(
             f"Характер: {bot.character.value} | "
-            f"Память: {bot.memory.name} | "
+            f"Память: {bot.memory_type.value} | "
             f"Сообщений: {len(bot.history)}"
         )
         return False
@@ -259,15 +259,15 @@ def print_help(*, output_fn: OutputFn = print) -> None:
 
 def print_welcome(bot: Bot, *, output_fn: OutputFn = print) -> None:
     output_fn("🤖 Умный ассистент с характером")
-    output_fn(f"Характер: {bot.character.value} | Память: {bot.memory.name}")
+    output_fn(f"Характер: {bot.character.value} | Память: {bot.memory_type.value}")
     output_fn("────────────────────────────────")
     output_fn("")
 
 
 def _parse_memory_type(value: str) -> MemoryType:
     try:
-        return MemoryType[value]
-    except KeyError as exc:
+        return MemoryType(value)
+    except ValueError as exc:
         raise ValueError(value) from exc
 
 
@@ -277,7 +277,7 @@ def _invalid_character_message() -> str:
 
 
 def _invalid_memory_message() -> str:
-    values = ", ".join(memory.name for memory in MemoryType)
+    values = ", ".join(memory.value for memory in MemoryType)
     return f"Неизвестная стратегия памяти. Доступно: {values}."
 
 
