@@ -3,13 +3,13 @@ from pathlib import Path
 
 import pytest
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
-from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.runnables import RunnableLambda
 from pydantic import PrivateAttr
 
 from langbot.bot import Bot
-from langbot.models import Character, Classification, RequestType
+from langbot.models import Character, Classification, RequestType, ResponseChunk, ResponseComplete, ResponseStart
 
 
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "langbot" / "prompts"
@@ -94,6 +94,31 @@ class UsageFakeModel(RecordingFakeModel):
         ])
 
 
+class StreamingUsageFakeModel(RecordingFakeModel):
+    def _stream(self, messages, stop=None, run_manager=None, **kwargs):
+        self._seen_calls.append(list(messages))
+        yield ChatGenerationChunk(message=AIMessageChunk(content="first "))
+        yield ChatGenerationChunk(message=AIMessageChunk(
+            content="second",
+            usage_metadata={
+                "input_tokens": 7,
+                "output_tokens": 5,
+                "total_tokens": 12,
+            },
+        ))
+
+
+class BlockStreamingFakeModel(RecordingFakeModel):
+    def _stream(self, messages, stop=None, run_manager=None, **kwargs):
+        self._seen_calls.append(list(messages))
+        yield ChatGenerationChunk(message=AIMessageChunk(
+            content=[{"type": "text", "text": "hello"}]
+        ))
+        yield ChatGenerationChunk(message=AIMessageChunk(
+            content=[{"type": "text", "text": " world"}]
+        ))
+
+
 def test_bot_raises_for_unexpected_character():
     model = RecordingFakeModel(responses=["ok"])
 
@@ -158,3 +183,93 @@ def test_bot_process_reports_model_token_usage():
 
     assert result.content == "ok"
     assert result.tokens_used == 16
+
+
+def test_bot_stream_process_emits_events_and_updates_history_on_completion():
+    model = StreamingUsageFakeModel(responses=["unused"])
+    classifier_model = UsageClassificationModel(
+        Classification(
+            request_type=RequestType.question,
+            confidence=0.99,
+            reasoning="fixed",
+        ),
+        total_tokens=4,
+    )
+    bot = Bot(
+        model,
+        character=Character.professional,
+        classifier_model=classifier_model,
+    )
+
+    events = list(bot.stream_process("stream input"))
+
+    assert [type(event) for event in events] == [
+        ResponseStart,
+        ResponseChunk,
+        ResponseChunk,
+        ResponseComplete,
+    ]
+    assert events[0].request_type == RequestType.question
+    assert events[1].text == "first "
+    assert events[2].text == "second"
+    assert events[3].response.content == "first second"
+    assert events[3].response.tokens_used == 16
+    assert [message.content for message in model.seen_calls[0]] == [
+        f"{CHARACTER_PROMPTS[Character.professional]}\n\n"
+        f"{REQUEST_PROMPTS[RequestType.question]}",
+        "stream input",
+    ]
+    assert [type(message) for message in bot.history] == [HumanMessage, AIMessage]
+    assert [message.content for message in bot.history] == [
+        "stream input",
+        "first second",
+    ]
+
+
+def test_bot_stream_process_does_not_update_history_when_stream_fails():
+    class FailingStreamModel(RecordingFakeModel):
+        def _stream(self, messages, stop=None, run_manager=None, **kwargs):
+            self._seen_calls.append(list(messages))
+            yield ChatGenerationChunk(message=AIMessageChunk(content="partial"))
+            raise RuntimeError("boom")
+
+    model = FailingStreamModel(responses=["unused"])
+    classifier_model = FixedClassificationModel(
+        Classification(
+            request_type=RequestType.question,
+            confidence=0.99,
+            reasoning="fixed",
+        )
+    )
+    bot = Bot(model, classifier_model=classifier_model)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        list(bot.stream_process("stream input"))
+
+    assert bot.history == []
+
+
+def test_bot_stream_process_supports_block_content():
+    model = BlockStreamingFakeModel(responses=["unused"])
+    classifier_model = FixedClassificationModel(
+        Classification(
+            request_type=RequestType.question,
+            confidence=0.99,
+            reasoning="fixed",
+        )
+    )
+    bot = Bot(model, classifier_model=classifier_model)
+
+    events = list(bot.stream_process("stream input"))
+
+    assert [type(event) for event in events] == [
+        ResponseStart,
+        ResponseChunk,
+        ResponseChunk,
+        ResponseComplete,
+    ]
+    assert events[1].text == "hello"
+    assert events[2].text == " world"
+    assert events[3].response.content == "hello world"
+    assert [type(message) for message in bot.history] == [HumanMessage, AIMessage]
+    assert bot.history[-1].content == "hello world"

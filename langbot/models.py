@@ -1,5 +1,6 @@
 from inspect import cleandoc
 from enum import StrEnum, auto
+from typing import Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -47,3 +48,22 @@ class AssistanceResponse(BaseModel):
     tokens_used: int = Field(
         ge=0, description="приблизительное число токенов (для мониторинга)"
     )
+
+
+class ResponseStart(BaseModel):
+    event: Literal["start"] = "start"
+    request_type: RequestType = Field(description="определённый тип запроса")
+    confidence: float = Field(ge=0, le=1, description="уверенность классификатора")
+
+
+class ResponseChunk(BaseModel):
+    event: Literal["chunk"] = "chunk"
+    text: str = Field(min_length=1, description="фрагмент ответа модели")
+
+
+class ResponseComplete(BaseModel):
+    event: Literal["complete"] = "complete"
+    response: AssistanceResponse = Field(description="итоговый ответ и метаданные")
+
+
+BotStreamEvent: TypeAlias = ResponseStart | ResponseChunk | ResponseComplete

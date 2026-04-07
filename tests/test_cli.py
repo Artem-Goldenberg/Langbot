@@ -6,7 +6,9 @@ from langbot.cli import (
     print_welcome,
     run_cli,
 )
-from langbot.models import AssistanceResponse, Character, RequestType
+import openai
+
+from langbot.models import AssistanceResponse, Character, RequestType, ResponseChunk, ResponseComplete, ResponseStart
 
 
 class StubBot:
@@ -14,7 +16,7 @@ class StubBot:
         self.character = Character.friendly
         self.memory = MemoryType.buffer
         self.history = ["u1", "a1"]
-        self.process_calls: list[str] = []
+        self.stream_process_calls: list[str] = []
         self.cleared = False
 
     def clear_history(self):
@@ -27,14 +29,19 @@ class StubBot:
     def switch_memory(self, new_memory: MemoryType):
         self.memory = new_memory
 
-    def process(self, text: str) -> AssistanceResponse:
-        self.process_calls.append(text)
-        return AssistanceResponse(
+    def stream_process(self, text: str):
+        self.stream_process_calls.append(text)
+        yield ResponseStart(
+            request_type=RequestType.question,
+            confidence=0.923,
+        )
+        yield ResponseChunk(text=f"echo: {text}")
+        yield ResponseComplete(response=AssistanceResponse(
             content=f"echo: {text}",
             request_type=RequestType.question,
             confidence=0.923,
             tokens_used=78,
-        )
+        ))
 
 
 def test_format_response_matches_spec():
@@ -82,12 +89,16 @@ def test_run_cli_processes_messages_and_exits_on_quit():
         bot,
         input_fn=lambda _: next(inputs),
         output_fn=outputs.append,
+        stream_output_fn=outputs.append,
     )
 
     assert exit_code == 0
-    assert bot.process_calls == ["hello"]
+    assert bot.stream_process_calls == ["hello"]
     assert outputs == [
-        "[question] echo: hello\nconfidence: 0.92 | tokens: ~78",
+        "[question] ",
+        "echo: hello",
+        "",
+        "confidence: 0.92 | tokens: ~78",
         "",
         "До встречи.",
         "",
@@ -103,6 +114,7 @@ def test_run_cli_adds_blank_line_after_command_output():
         bot,
         input_fn=lambda _: next(inputs),
         output_fn=outputs.append,
+        stream_output_fn=outputs.append,
     )
 
     assert exit_code == 0
@@ -137,5 +149,32 @@ def test_print_welcome_shows_russian_banner():
         "🤖 Умный ассистент с характером",
         "Характер: friendly | Память: buffer",
         "────────────────────────────────",
+        "",
+    ]
+
+
+def test_run_cli_prints_api_error_for_stream_failures():
+    class FailingBot(StubBot):
+        def stream_process(self, text: str):
+            self.stream_process_calls.append(text)
+            raise openai.APIConnectionError(request=None)
+            yield
+
+    bot = FailingBot()
+    outputs: list[str] = []
+    inputs = iter(["hello", "/quit"])
+
+    exit_code = run_cli(
+        bot,
+        input_fn=lambda _: next(inputs),
+        output_fn=outputs.append,
+        stream_output_fn=outputs.append,
+    )
+
+    assert exit_code == 0
+    assert outputs == [
+        "Временная ошибка API: Connection error.",
+        "",
+        "До встречи.",
         "",
     ]

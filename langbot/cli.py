@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from langchain_openai import ChatOpenAI
 from sqlalchemy import create_engine
 
 from langbot.bot import Bot, MemoryType
-from langbot.models import AssistanceResponse, Character
+from langbot.models import AssistanceResponse, Character, ResponseChunk, ResponseComplete, ResponseStart
 
 RETRIABLE_EXCEPTIONS = (
     openai.RateLimitError,
@@ -25,6 +26,7 @@ RETRIABLE_EXCEPTIONS = (
 
 InputFn = Callable[[str], str]
 OutputFn = Callable[[str], None]
+StreamOutputFn = Callable[[str], None]
 
 HELP_TEXT = """Команды:
 /clear - очистить историю диалога
@@ -119,7 +121,10 @@ def run_cli(
     *,
     input_fn: InputFn = input,
     output_fn: OutputFn = print,
+    stream_output_fn: StreamOutputFn | None = None,
 ) -> int:
+    stream_output = stream_output_fn or _default_stream_output
+
     while True:
         try:
             user_input = input_fn("> ").strip()
@@ -141,13 +146,17 @@ def run_cli(
             continue
 
         try:
-            response = bot.process(user_input)
+            response = _stream_response(
+                bot,
+                user_input,
+                output_fn=output_fn,
+                stream_output_fn=stream_output,
+            )
         except RETRIABLE_EXCEPTIONS as exc:
             output_fn(f"Временная ошибка API: {exc}")
             output_fn("")
             continue
 
-        output_fn(format_response(response))
         output_fn("")
 
 
@@ -213,6 +222,37 @@ def format_response(response: AssistanceResponse) -> str:
     )
 
 
+def _stream_response(
+    bot: Bot,
+    user_input: str,
+    *,
+    output_fn: OutputFn,
+    stream_output_fn: StreamOutputFn,
+) -> AssistanceResponse:
+    response: AssistanceResponse | None = None
+
+    for event in bot.stream_process(user_input):
+        if isinstance(event, ResponseStart):
+            stream_output_fn(f"[{event.request_type.value}] ")
+            continue
+
+        if isinstance(event, ResponseChunk):
+            stream_output_fn(event.text)
+            continue
+
+        if isinstance(event, ResponseComplete):
+            response = event.response
+            output_fn("")
+            output_fn(
+                f"confidence: {response.confidence:.2f} | tokens: ~{response.tokens_used}"
+            )
+
+    if response is None:
+        raise RuntimeError("Bot stream ended without completion event")
+
+    return response
+
+
 def print_help(*, output_fn: OutputFn = print) -> None:
     output_fn(HELP_TEXT.rstrip())
 
@@ -239,3 +279,8 @@ def _invalid_character_message() -> str:
 def _invalid_memory_message() -> str:
     values = ", ".join(memory.name for memory in MemoryType)
     return f"Неизвестная стратегия памяти. Доступно: {values}."
+
+
+def _default_stream_output(text: str) -> None:
+    sys.stdout.write(text)
+    sys.stdout.flush()
