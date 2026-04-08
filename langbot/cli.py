@@ -16,6 +16,7 @@ from sqlalchemy import create_engine
 
 from langbot.bot import Bot, MemoryType
 from langbot.models import AssistanceResponse, Character, ResponseChunk, ResponseComplete, ResponseStart
+from langbot.tracing import default_log_path
 
 RETRIABLE_EXCEPTIONS = (
     openai.RateLimitError,
@@ -78,6 +79,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_CACHE_DB,
         help=f"Путь к SQLite-файлу для LLM-кеша. По умолчанию: {DEFAULT_CACHE_DB}.",
     )
+    parser.add_argument(
+        "--log-file",
+        default=default_log_path(),
+        help="Путь к файлу трассировки диалога.",
+    )
     return parser
 
 
@@ -89,6 +95,7 @@ def main() -> int:
         model_name=args.model,
         character=args.character,
         memory_type=args.memory,
+        log_path=args.log_file,
     )
     print_welcome(bot)
     return run_cli(bot)
@@ -99,11 +106,17 @@ def create_bot(
     model_name: str,
     character: Character,
     memory_type: MemoryType,
+    log_path: str | None = None,
 ) -> Bot:
     model = ChatOpenAI(model=model_name).with_retry(
         retry_if_exception_type=RETRIABLE_EXCEPTIONS
     )
-    return Bot(model, character=character, memory_type=memory_type)
+    return Bot(
+        model,
+        character=character,
+        memory_type=memory_type,
+        log_path=log_path,
+    )
 
 
 def configure_llm_cache(cache_db: str | None) -> None:

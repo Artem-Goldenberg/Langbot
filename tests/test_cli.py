@@ -1,3 +1,4 @@
+import re
 from typing import cast
 
 import httpx
@@ -65,6 +66,13 @@ def test_build_parser_help_shows_plain_memory_names():
     help_text = build_parser().format_help()
 
     assert "--memory {buffer,summary}" in help_text
+    assert "--log-file LOG_FILE" in help_text
+
+
+def test_build_parser_uses_timestamped_log_file_by_default():
+    args = build_parser().parse_args([])
+
+    assert re.fullmatch(r"\.logs/\d{2}-\d{2}_\d{2}-\d{2}", args.log_file)
 
 
 def test_handle_command_updates_character_memory_and_status():

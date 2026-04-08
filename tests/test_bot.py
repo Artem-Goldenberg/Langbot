@@ -45,6 +45,7 @@ def _entities_suffix(entities: dict[str, object]) -> str:
 
 def _known_entities_prompt(entities: dict[str, object]) -> str:
     return f"Уже известные сущности:\n{json.dumps(entities, ensure_ascii=False, indent=2, sort_keys=True)}"
+
 class RecordingFakeModel(FakeListChatModel):
     _seen_calls: list[list] = PrivateAttr(default_factory=list)
 
@@ -406,6 +407,93 @@ def test_bot_summary_memory_uses_dedicated_summary_chain():
         "user_name": "Alice",
         "preferences": {"drink": "tea"},
     }
+
+
+def test_bot_process_writes_trace_log(tmp_path: Path):
+    model = UsageFakeModel(responses=["ok"])
+    classifier_model = UsageClassificationModel(
+        Classification(
+            request_type=RequestType.question,
+            confidence=0.99,
+            reasoning="fixed",
+        ),
+        total_tokens=4,
+    )
+    log_path = tmp_path / "trace.log"
+    bot = Bot(
+        model,
+        classifier_model=classifier_model,
+        log_path=str(log_path),
+    )
+
+    response = bot.process("test input")
+
+    assert response.content == "ok"
+    assert log_path.exists()
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "Langbot Session Trace" in log_text
+    assert "Started" in log_text
+    assert "\"user_input\": \"test input\"" in log_text
+    assert "response Model Response" in log_text
+    assert "\"content\": \"ok\"" in log_text
+    assert "\"total_tokens\": 12" in log_text
+    assert "Completed" in log_text
+
+
+def test_bot_logs_memory_events_to_trace_file(tmp_path: Path):
+    model = RecordingFakeModel(responses=["first response", "second response"])
+    summary_model = RecordingFakeModel(responses=["summary of first turn"])
+    entity_model = RecordingFakeModel(
+        responses=['{"user_name":"Alice","home_city":"Paris"}']
+    )
+    classifier_model = FixedClassificationModel(
+        Classification(
+            request_type=RequestType.question,
+            confidence=0.99,
+            reasoning="fixed",
+        )
+    )
+
+    log_path = tmp_path / "trace.log"
+    bot = Bot(
+        model,
+        memory_type=MemoryType.summary,
+        classifier_model=classifier_model,
+        summary_model=summary_model,
+        entity_model=entity_model,
+        max_context_tokens=3,
+        log_path=str(log_path),
+    )
+
+    bot.process("first input")
+    bot.process("second input")
+    bot.switch_memory(MemoryType.buffer)
+    bot.clear_history()
+
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "Summary Memory Triggered" in log_text
+    assert "\"new_summary\": \"summary of first turn\"" in log_text
+    assert "Entity Memory Triggered" in log_text
+    assert "\"source\": \"history_reduction\"" in log_text
+    assert "entity Model Response" in log_text
+    assert "Entity Memory Updated" in log_text
+    assert "\"extracted_entities\": {" in log_text
+    assert "\"home_city\": \"Paris\"" in log_text
+    assert "Memory Strategy Switched" in log_text
+    assert "\"new_memory\": \"buffer\"" in log_text
+    assert "History Cleared" in log_text
+    assert "\"previous_summary\": \"summary of first turn\"" in log_text
+
+
+def test_bot_creates_trace_file_at_startup(tmp_path: Path):
+    log_path = tmp_path / "trace.log"
+
+    Bot(RecordingFakeModel(responses=["ok"]), log_path=str(log_path))
+
+    assert log_path.exists()
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "Langbot Session Trace" in log_text
+    assert "Session Initialized" in log_text
 
 
 def test_bot_clear_history_extracts_entities_and_keeps_them_after_clear():
