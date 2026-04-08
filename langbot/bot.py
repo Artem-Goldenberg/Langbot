@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from langchain_core.chat_history import InMemoryChatMessageHistory
+from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
@@ -16,7 +17,13 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RouterRunnable, Runnable, RunnablePassthrough, chain
 
 from langbot.classifier import classifier_chain
-from langbot.memory import history_fits_context, summary_chain, trim_history
+from langbot.memory import (
+    entity_memory_chain,
+    format_entities_json,
+    history_fits_context,
+    summary_chain,
+    trim_history,
+)
 from langbot.models import *
 
 
@@ -31,7 +38,7 @@ class MemoryType(StrEnum):
 
 class Bot:
     prompt_template = ChatPromptTemplate.from_messages([
-        ("system", "{character}\n\n{instructions}{summary}"),
+        ("system", "{character}\n\n{instructions}{summary}{entities}"),
         MessagesPlaceholder(variable_name="history", optional=True),
         ("human", "{input}"),
     ])
@@ -44,6 +51,7 @@ class Bot:
         memory_type: MemoryType = MemoryType.buffer,
         classifier_model: Runnable[Any, AIMessage] | None = None,
         summary_model: Runnable[Any, AIMessage] | None = None,
+        entity_model: Runnable[Any, AIMessage] | None = None,
         max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
     ):
         self.character = character
@@ -52,10 +60,13 @@ class Bot:
         self.main_model = model
         self.classifier_model = classifier_model or model
         self.summary_model = summary_model or model
+        self.entity_model = entity_model or model
 
         self.max_context_tokens = max_context_tokens
         self.summary_chain = summary_chain(self.summary_model)
+        self.entity_chain = entity_memory_chain(self.entity_model)
         self._summary: str | None = None
+        self._entities: dict[str, Any] = {}
 
         self._history = InMemoryChatMessageHistory()
         self.classifier = classifier_chain(self.classifier_model)
@@ -88,7 +99,12 @@ class Bot:
     def history(self) -> list[BaseMessage]:
         return self._history.messages
 
+    @property
+    def entities(self) -> dict[str, Any]:
+        return self._entities
+
     def clear_history(self):
+        self._remember_entities()
         self._history.clear()
         self._set_summary(None)
 
@@ -164,6 +180,8 @@ class Bot:
         ):
             return history
 
+        self._remember_entities()
+
         match self.memory_type:
             case MemoryType.buffer:
                 return trim_history(
@@ -179,10 +197,29 @@ class Bot:
         self._summary = summary
         self.assemble()
 
+    def _remember_entities(self):
+        if not self.history:
+            return
+
+        try:
+            extracted = self.entity_chain.invoke({
+                "known_entities": self._entities,
+                "history": self.history,
+            })
+        except OutputParserException:
+            return
+
+        if not isinstance(extracted, dict):
+            return
+
+        self._entities = _merge_json_objects(self._entities, extracted)
+        self.assemble()
+
     def _refresh_main_prompt(self):
         self.main_prompt = self.prompt_template.partial(
             character=self._character_prompts[self.character],
             summary=_summary_suffix(self._summary),
+            entities=_entities_suffix(self._entities),
         )
 
 
@@ -190,6 +227,15 @@ def _summary_suffix(summary: str | None) -> str:
     if summary is None:
         return ""
     return f"\n\nКраткая сводка предыдущего диалога:\n{summary}"
+
+
+def _entities_suffix(entities: dict[str, Any]) -> str:
+    if not entities:
+        return ""
+    return (
+        "\n\nИзвестные данные о пользователе:\n"
+        f"{format_entities_json(entities)}"
+    )
 
 
 @chain
@@ -276,3 +322,16 @@ def _final_message(chunk: AIMessageChunk | None) -> AIMessage:
     if not isinstance(message, AIMessage):
         raise TypeError(f"Expected AIMessage, got {type(message).__name__}")
     return message
+
+def _merge_json_objects(
+    current: dict[str, Any],
+    updates: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(current)
+    for key, value in updates.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = _merge_json_objects(existing, value)
+            continue
+        merged[key] = value
+    return merged

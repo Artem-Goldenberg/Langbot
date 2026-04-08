@@ -1,9 +1,10 @@
 import json
 from pathlib import Path
+from typing import Any, Sequence, cast
 
 import pytest
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.outputs import (
     ChatGeneration,
     ChatGenerationChunk,
@@ -33,6 +34,17 @@ def _load_json(filename: str) -> dict[str, str]:
 
 REQUEST_PROMPTS = _load_json("request_prompts.json")
 CHARACTER_PROMPTS = _load_json("character_prompts.json")
+
+
+def _entities_suffix(entities: dict[str, object]) -> str:
+    return (
+        "\n\nИзвестные данные о пользователе:\n"
+        f"{json.dumps(entities, ensure_ascii=False, indent=2, sort_keys=True)}"
+    )
+
+
+def _known_entities_prompt(entities: dict[str, object]) -> str:
+    return f"Уже известные сущности:\n{json.dumps(entities, ensure_ascii=False, indent=2, sort_keys=True)}"
 class RecordingFakeModel(FakeListChatModel):
     _seen_calls: list[list] = PrivateAttr(default_factory=list)
 
@@ -40,7 +52,11 @@ class RecordingFakeModel(FakeListChatModel):
     def seen_calls(self) -> list[list]:
         return self._seen_calls
 
-    def get_num_tokens_from_messages(self, messages) -> int:
+    def get_num_tokens_from_messages(
+        self,
+        messages: list[BaseMessage],
+        tools: Sequence[Any] | None = None,
+    ) -> int:
         return sum(len(str(message.content).split()) for message in messages)
 
     def _call(self, *args, **kwargs):
@@ -214,6 +230,10 @@ def test_bot_stream_process_emits_events_and_updates_history_on_completion():
     )
 
     events = list(bot.stream_process("stream input"))
+    start = cast(ResponseStart, events[0])
+    first_chunk = cast(ResponseChunk, events[1])
+    second_chunk = cast(ResponseChunk, events[2])
+    complete = cast(ResponseComplete, events[3])
 
     assert [type(event) for event in events] == [
         ResponseStart,
@@ -221,11 +241,11 @@ def test_bot_stream_process_emits_events_and_updates_history_on_completion():
         ResponseChunk,
         ResponseComplete,
     ]
-    assert events[0].request_type == RequestType.question
-    assert events[1].text == "first "
-    assert events[2].text == "second"
-    assert events[3].response.content == "first second"
-    assert events[3].response.tokens_used == 16
+    assert start.request_type == RequestType.question
+    assert first_chunk.text == "first "
+    assert second_chunk.text == "second"
+    assert complete.response.content == "first second"
+    assert complete.response.tokens_used == 16
     assert [message.content for message in model.seen_calls[0]] == [
         f"{CHARACTER_PROMPTS[Character.professional]}\n\n"
         f"{REQUEST_PROMPTS[RequestType.question]}",
@@ -273,6 +293,9 @@ def test_bot_stream_process_supports_block_content():
     bot = Bot(model, classifier_model=classifier_model)
 
     events = list(bot.stream_process("stream input"))
+    first_chunk = cast(ResponseChunk, events[1])
+    second_chunk = cast(ResponseChunk, events[2])
+    complete = cast(ResponseComplete, events[3])
 
     assert [type(event) for event in events] == [
         ResponseStart,
@@ -280,9 +303,9 @@ def test_bot_stream_process_supports_block_content():
         ResponseChunk,
         ResponseComplete,
     ]
-    assert events[1].text == "hello"
-    assert events[2].text == " world"
-    assert events[3].response.content == "hello world"
+    assert first_chunk.text == "hello"
+    assert second_chunk.text == " world"
+    assert complete.response.content == "hello world"
     assert [type(message) for message in bot.history] == [HumanMessage, AIMessage]
     assert bot.history[-1].content == "hello world"
 
@@ -290,6 +313,9 @@ def test_bot_stream_process_supports_block_content():
 def test_bot_buffer_memory_keeps_only_recent_messages():
     model = RecordingFakeModel(
         responses=["first response", "second response", "third response"]
+    )
+    entity_model = RecordingFakeModel(
+        responses=['{"user_name":"Alice","home_city":"Paris"}']
     )
     classifier_model = FixedClassificationModel(
         Classification(
@@ -302,6 +328,7 @@ def test_bot_buffer_memory_keeps_only_recent_messages():
         model,
         memory_type=MemoryType.buffer,
         classifier_model=classifier_model,
+        entity_model=entity_model,
         max_context_tokens=4,
     )
 
@@ -309,18 +336,33 @@ def test_bot_buffer_memory_keeps_only_recent_messages():
     bot.process("second input")
     bot.process("third input")
 
+    assert entity_model.seen_calls[0][0].content.endswith(_known_entities_prompt({}))
+    assert [message.content for message in entity_model.seen_calls[0][1:]] == [
+        "first input",
+        "first response",
+        "second input",
+        "second response",
+    ]
     assert [message.content for message in model.seen_calls[2]] == [
         f"{CHARACTER_PROMPTS[Character.friendly]}\n\n"
-        f"{REQUEST_PROMPTS[RequestType.question]}",
+        f"{REQUEST_PROMPTS[RequestType.question]}"
+        f"{_entities_suffix({'user_name': 'Alice', 'home_city': 'Paris'})}",
         "second input",
         "second response",
         "third input",
     ]
+    assert bot.entities == {
+        "user_name": "Alice",
+        "home_city": "Paris",
+    }
 
 
 def test_bot_summary_memory_uses_dedicated_summary_chain():
     model = RecordingFakeModel(responses=["first response", "second response"])
     summary_model = RecordingFakeModel(responses=["summary of first turn"])
+    entity_model = RecordingFakeModel(
+        responses=['{"user_name":"Alice","preferences":{"drink":"tea"}}']
+    )
     classifier_model = FixedClassificationModel(
         Classification(
             request_type=RequestType.question,
@@ -333,6 +375,7 @@ def test_bot_summary_memory_uses_dedicated_summary_chain():
         memory_type=MemoryType.summary,
         classifier_model=classifier_model,
         summary_model=summary_model,
+        entity_model=entity_model,
         max_context_tokens=3,
     )
 
@@ -350,6 +393,133 @@ def test_bot_summary_memory_uses_dedicated_summary_chain():
         f"{CHARACTER_PROMPTS[Character.friendly]}\n\n"
         f"{REQUEST_PROMPTS[RequestType.question]}\n\n"
         "Краткая сводка предыдущего диалога:\nsummary of first turn"
+        f"{_entities_suffix({'user_name': 'Alice', 'preferences': {'drink': 'tea'}})}"
     )
     assert [message.content for message in model.seen_calls[1][1:]] == ["second input"]
+    assert entity_model.seen_calls[0][0].content.endswith(_known_entities_prompt({}))
+    assert [message.content for message in entity_model.seen_calls[0][1:]] == [
+        "first input",
+        "first response",
+    ]
     assert [type(message) for message in bot.history] == [HumanMessage, AIMessage]
+    assert bot.entities == {
+        "user_name": "Alice",
+        "preferences": {"drink": "tea"},
+    }
+
+
+def test_bot_clear_history_extracts_entities_and_keeps_them_after_clear():
+    model = RecordingFakeModel(responses=["first response", "second response"])
+    entity_model = RecordingFakeModel(
+        responses=['{"user_name":"Anna","home_city":"Berlin"}']
+    )
+    classifier_model = FixedClassificationModel(
+        Classification(
+            request_type=RequestType.question,
+            confidence=0.99,
+            reasoning="fixed",
+        )
+    )
+    bot = Bot(
+        model,
+        classifier_model=classifier_model,
+        entity_model=entity_model,
+    )
+
+    bot.process("Меня зовут Анна")
+    bot.clear_history()
+    response = bot.process("Кто я?")
+
+    assert response.content == "second response"
+    assert [type(message) for message in bot.history] == [HumanMessage, AIMessage]
+    assert [message.content for message in bot.history] == ["Кто я?", "second response"]
+    assert bot.entities == {
+        "user_name": "Anna",
+        "home_city": "Berlin",
+    }
+    assert entity_model.seen_calls[0][0].content.endswith(_known_entities_prompt({}))
+    assert [message.content for message in entity_model.seen_calls[0][1:]] == [
+        "Меня зовут Анна",
+        "first response",
+    ]
+    assert model.seen_calls[1][0].content == (
+        f"{CHARACTER_PROMPTS[Character.friendly]}\n\n"
+        f"{REQUEST_PROMPTS[RequestType.question]}"
+        f"{_entities_suffix({'user_name': 'Anna', 'home_city': 'Berlin'})}"
+    )
+
+
+def test_bot_entity_memory_includes_known_entities_and_deep_merges_updates():
+    model = RecordingFakeModel(responses=["first response", "second response"])
+    entity_model = RecordingFakeModel(
+        responses=[
+            '{"profile":{"name":"Anna","city":"Berlin"}}',
+            '{"profile":{"likes":["tea"]},"timezone":"Europe/Berlin"}',
+        ]
+    )
+    classifier_model = FixedClassificationModel(
+        Classification(
+            request_type=RequestType.question,
+            confidence=0.99,
+            reasoning="fixed",
+        )
+    )
+    bot = Bot(
+        model,
+        classifier_model=classifier_model,
+        entity_model=entity_model,
+    )
+
+    bot.process("Меня зовут Анна")
+    bot.clear_history()
+    bot.process("Я люблю чай")
+    bot.clear_history()
+
+    assert entity_model.seen_calls[1][0].content.endswith(_known_entities_prompt({
+        "profile": {
+            "city": "Berlin",
+            "name": "Anna",
+        }
+    }))
+    assert [message.content for message in entity_model.seen_calls[1][1:]] == [
+        "Я люблю чай",
+        "second response",
+    ]
+    assert bot.entities == {
+        "profile": {
+            "name": "Anna",
+            "city": "Berlin",
+            "likes": ["tea"],
+        },
+        "timezone": "Europe/Berlin",
+    }
+
+
+def test_bot_ignores_entity_parser_failures():
+    model = RecordingFakeModel(responses=["first response", "second response"])
+    entity_model = RecordingFakeModel(responses=["not json at all"])
+    classifier_model = FixedClassificationModel(
+        Classification(
+            request_type=RequestType.question,
+            confidence=0.99,
+            reasoning="fixed",
+        )
+    )
+    bot = Bot(
+        model,
+        classifier_model=classifier_model,
+        entity_model=entity_model,
+        max_context_tokens=3,
+    )
+
+    bot.process("first input")
+    bot.clear_history()
+    response = bot.process("second input")
+
+    assert response.content == "second response"
+    assert bot.entities == {}
+    assert [type(message) for message in bot.history] == [HumanMessage, AIMessage]
+    assert [message.content for message in bot.history] == [
+        "second input",
+        "second response",
+    ]

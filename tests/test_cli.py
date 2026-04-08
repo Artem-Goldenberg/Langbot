@@ -1,4 +1,9 @@
+from typing import cast
+
+import httpx
+import openai
 from langbot.bot import MemoryType
+from langbot.bot import Bot
 from langbot.cli import (
     build_parser,
     format_response,
@@ -6,7 +11,6 @@ from langbot.cli import (
     print_welcome,
     run_cli,
 )
-import openai
 
 from langbot.models import AssistanceResponse, Character, RequestType, ResponseChunk, ResponseComplete, ResponseStart
 
@@ -65,11 +69,12 @@ def test_build_parser_help_shows_plain_memory_names():
 
 def test_handle_command_updates_character_memory_and_status():
     bot = StubBot()
+    typed_bot = cast(Bot, bot)
     outputs: list[str] = []
 
-    assert handle_command("/character pirate", bot, output_fn=outputs.append) is False
-    assert handle_command("/memory summary", bot, output_fn=outputs.append) is False
-    assert handle_command("/status", bot, output_fn=outputs.append) is False
+    assert handle_command("/character pirate", typed_bot, output_fn=outputs.append) is False
+    assert handle_command("/memory summary", typed_bot, output_fn=outputs.append) is False
+    assert handle_command("/status", typed_bot, output_fn=outputs.append) is False
 
     assert bot.character == Character.pirate
     assert bot.memory_type == MemoryType.summary
@@ -82,11 +87,12 @@ def test_handle_command_updates_character_memory_and_status():
 
 def test_run_cli_processes_messages_and_exits_on_quit():
     bot = StubBot()
+    typed_bot = cast(Bot, bot)
     outputs: list[str] = []
     inputs = iter(["hello", "/quit"])
 
     exit_code = run_cli(
-        bot,
+        typed_bot,
         input_fn=lambda _: next(inputs),
         output_fn=outputs.append,
         stream_output_fn=outputs.append,
@@ -107,11 +113,12 @@ def test_run_cli_processes_messages_and_exits_on_quit():
 
 def test_run_cli_adds_blank_line_after_command_output():
     bot = StubBot()
+    typed_bot = cast(Bot, bot)
     outputs: list[str] = []
     inputs = iter(["/character pirate", "/quit"])
 
     exit_code = run_cli(
-        bot,
+        typed_bot,
         input_fn=lambda _: next(inputs),
         output_fn=outputs.append,
         stream_output_fn=outputs.append,
@@ -128,10 +135,11 @@ def test_run_cli_adds_blank_line_after_command_output():
 
 def test_handle_command_rejects_unknown_values():
     bot = StubBot()
+    typed_bot = cast(Bot, bot)
     outputs: list[str] = []
 
-    handle_command("/character wizard", bot, output_fn=outputs.append)
-    handle_command("/memory infinite", bot, output_fn=outputs.append)
+    handle_command("/character wizard", typed_bot, output_fn=outputs.append)
+    handle_command("/memory infinite", typed_bot, output_fn=outputs.append)
 
     assert outputs == [
         "Неизвестный характер. Доступно: friendly, professional, sarcastic, pirate.",
@@ -141,9 +149,10 @@ def test_handle_command_rejects_unknown_values():
 
 def test_print_welcome_shows_russian_banner():
     bot = StubBot()
+    typed_bot = cast(Bot, bot)
     outputs: list[str] = []
 
-    print_welcome(bot, output_fn=outputs.append)
+    print_welcome(typed_bot, output_fn=outputs.append)
 
     assert outputs == [
         "🤖 Умный ассистент с характером",
@@ -157,15 +166,18 @@ def test_run_cli_prints_api_error_for_stream_failures():
     class FailingBot(StubBot):
         def stream_process(self, text: str):
             self.stream_process_calls.append(text)
-            raise openai.APIConnectionError(request=None)
+            raise openai.APIConnectionError(
+                request=httpx.Request("GET", "https://example.com")
+            )
             yield
 
     bot = FailingBot()
+    typed_bot = cast(Bot, bot)
     outputs: list[str] = []
     inputs = iter(["hello", "/quit"])
 
     exit_code = run_cli(
-        bot,
+        typed_bot,
         input_fn=lambda _: next(inputs),
         output_fn=outputs.append,
         stream_output_fn=outputs.append,

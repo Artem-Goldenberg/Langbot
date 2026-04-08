@@ -16,7 +16,7 @@ class StructuredOutputFakeModel(FakeListChatModel):
         *,
         include_raw: bool = False,
         **kwargs: Any,
-    ):
+    ) -> Any:
         schema_name = schema.__name__ if isinstance(schema, type) else "dict"
         return RunnableLambda(
             lambda _: {
@@ -49,7 +49,7 @@ class ExplodingStructuredOutputModel(StructuredOutputFakeModel):
         *,
         include_raw: bool = False,
         **kwargs: Any,
-    ):
+    ) -> Any:
         return RunnableLambda(lambda _: (_ for _ in ()).throw(RuntimeError("boom")))
 
 
@@ -138,7 +138,7 @@ def test_classifier_returns_unknown_when_structured_output_cannot_parse():
             *,
             include_raw: bool = False,
             **kwargs: Any,
-        ):
+        ) -> Any:
             return RunnableLambda(
                 lambda _: {
                     "raw": AIMessage(content=""),
