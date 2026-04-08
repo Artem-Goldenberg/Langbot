@@ -51,17 +51,23 @@ class AssistanceResponse(BaseModel):
 
 
 class ResponseStart(BaseModel):
+    """First streaming event containing the classifier result for the turn."""
+
     event: Literal["start"] = "start"
     request_type: RequestType = Field(description="определённый тип запроса")
     confidence: float = Field(ge=0, le=1, description="уверенность классификатора")
 
 
 class ResponseChunk(BaseModel):
+    """Streaming event carrying the next text fragment from the model."""
+
     event: Literal["chunk"] = "chunk"
     text: str = Field(min_length=1, description="фрагмент ответа модели")
 
 
 class ResponseComplete(BaseModel):
+    """Final streaming event containing the assembled assistant response."""
+
     event: Literal["complete"] = "complete"
     response: AssistanceResponse = Field(description="итоговый ответ и метаданные")
 

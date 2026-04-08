@@ -16,6 +16,7 @@ from pydantic import BaseModel, SecretStr
 
 
 def default_log_path() -> str:
+    """Return the default session log path for the current minute."""
     return str(Path(".logs") / datetime.now().strftime("%d-%m_%H-%M"))
 
 
@@ -27,12 +28,15 @@ class _RunState:
 
 
 class SessionTraceLogger:
+    """Write structured session events to a plain-text trace file."""
+
     def __init__(
         self,
         path: str | None,
         *,
         session_info: dict[str, Any],
     ):
+        """Create a session logger and record the initial session metadata."""
         self.path = Path(path) if path else Path(default_log_path())
         self._session_info = session_info
         self._session_started_at = datetime.now()
@@ -45,6 +49,7 @@ class SessionTraceLogger:
         title: str,
         **kwargs: Any,
     ) -> None:
+        """Append one timestamped event with optional structured fields."""
         with self._lock:
             self._ensure_parent_dir()
             parts = []
@@ -88,11 +93,14 @@ class SessionTraceLogger:
 
 
 class LangChainTraceCallbackHandler(BaseCallbackHandler):
+    """Translate LangChain callback events into compact session trace entries."""
+
     def __init__(
         self,
         *,
         logger: SessionTraceLogger,
     ):
+        """Initialize the callback handler with the target session logger."""
         self._logger = logger
         self._runs: dict[UUID, _RunState] = {}
         self._chain_names: dict[UUID, str] = {}
@@ -107,6 +115,7 @@ class LangChainTraceCallbackHandler(BaseCallbackHandler):
         parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> Any:
+        """Track chain ancestry so nested model events can inherit a useful name."""
         self._chain_parents[run_id] = parent_run_id
         self._chain_names[run_id] = _chain_name(
             serialized=serialized,
@@ -123,6 +132,7 @@ class LangChainTraceCallbackHandler(BaseCallbackHandler):
         tags: list[str] | None = None,
         **kwargs: Any,
     ) -> Any:
+        """Log a chat-model request under the nearest named chain."""
         name = _model_event_name(
             parent_run_id=parent_run_id,
             chain_names=self._chain_names,
@@ -150,6 +160,7 @@ class LangChainTraceCallbackHandler(BaseCallbackHandler):
         tags: list[str] | None = None,
         **kwargs: Any,
     ) -> Any:
+        """Log a text-LLM request under the nearest named chain."""
         name = _model_event_name(
             parent_run_id=parent_run_id,
             chain_names=self._chain_names,
@@ -174,6 +185,7 @@ class LangChainTraceCallbackHandler(BaseCallbackHandler):
         run_id: UUID,
         **kwargs: Any,
     ) -> Any:
+        """Log time-to-first-token once for a streaming LLM run."""
         run = self._runs.get(run_id)
         if run is None or run.first_token_at is not None:
             return
@@ -196,6 +208,7 @@ class LangChainTraceCallbackHandler(BaseCallbackHandler):
         tags: list[str] | None = None,
         **kwargs: Any,
     ) -> Any:
+        """Log a compact model response with timing, usage, and preview text."""
         run = self._runs.pop(run_id, None)
         finished_at = time.perf_counter()
         name = run.name if run is not None else _model_event_name(
@@ -238,6 +251,7 @@ class LangChainTraceCallbackHandler(BaseCallbackHandler):
         tags: list[str] | None = None,
         **kwargs: Any,
     ) -> Any:
+        """Log model failures together with timing and error details."""
         run = self._runs.pop(run_id, None)
         finished_at = time.perf_counter()
         name = run.name if run is not None else _model_event_name(
@@ -268,6 +282,7 @@ class LangChainTraceCallbackHandler(BaseCallbackHandler):
         parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> Any:
+        """Drop stored chain ancestry once the chain finishes."""
         self._chain_names.pop(run_id, None)
         self._chain_parents.pop(run_id, None)
 

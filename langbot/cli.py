@@ -75,6 +75,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Имя модели ChatOpenAI.",
     )
     parser.add_argument(
+        "--fallback-model",
+        default="",
+        help="Имя резервной модели ChatOpenAI. По умолчанию fallback отключён.",
+    )
+    parser.add_argument(
         "--cache-db",
         default=DEFAULT_CACHE_DB,
         help=f"Путь к SQLite-файлу для LLM-кеша. По умолчанию: {DEFAULT_CACHE_DB}.",
@@ -93,6 +98,7 @@ def main() -> int:
     configure_llm_cache(args.cache_db)
     bot = create_bot(
         model_name=args.model,
+        fallback_model_name=args.fallback_model,
         character=args.character,
         memory_type=args.memory,
         log_path=args.log_file,
@@ -104,13 +110,24 @@ def main() -> int:
 def create_bot(
     *,
     model_name: str,
+    fallback_model_name: str,
     character: Character,
     memory_type: MemoryType,
     log_path: str | None = None,
 ) -> Bot:
-    model = ChatOpenAI(model=model_name).with_retry(
+    primary_model = ChatOpenAI(model=model_name).with_retry(
         retry_if_exception_type=RETRIABLE_EXCEPTIONS
     )
+    fallback_name = fallback_model_name.strip()
+    model = primary_model
+    if fallback_name:
+        fallback_model = ChatOpenAI(model=fallback_name).with_retry(
+            retry_if_exception_type=RETRIABLE_EXCEPTIONS
+        )
+        model = primary_model.with_fallbacks(
+            [fallback_model],
+            exceptions_to_handle=RETRIABLE_EXCEPTIONS,
+        )
     return Bot(
         model,
         character=character,

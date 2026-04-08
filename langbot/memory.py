@@ -10,9 +10,11 @@ from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import Runnable, RunnablePassthrough
 from langchain_core.runnables.base import RunnableBindingBase
+from langchain_core.runnables.fallbacks import RunnableWithFallbacks
 
 
 def summary_chain(model: Runnable[Any, AIMessage]) -> Runnable:
+    """Build a chain that compresses chat history into a short working summary."""
     prompt = ChatPromptTemplate.from_messages([
         (
             "system",
@@ -26,6 +28,7 @@ def summary_chain(model: Runnable[Any, AIMessage]) -> Runnable:
 
 
 def entity_memory_chain(model: Runnable[Any, AIMessage]) -> Runnable:
+    """Build a chain that extracts durable user facts as a JSON object."""
     parser = JsonOutputParser()
     prompt = ChatPromptTemplate.from_messages([
         (
@@ -56,6 +59,7 @@ def entity_memory_chain(model: Runnable[Any, AIMessage]) -> Runnable:
 
 
 def format_entities_json(entities: dict[str, Any]) -> str:
+    """Render the entity store as stable, human-readable JSON."""
     return json.dumps(entities, ensure_ascii=False, indent=2, sort_keys=True)
 
 
@@ -65,6 +69,7 @@ def history_fits_context(
     model: Runnable[Any, AIMessage],
     max_tokens: int,
 ) -> bool:
+    """Return whether the current history fits inside the target token budget."""
     return _chat_model(model).get_num_tokens_from_messages(history) <= max_tokens
 
 
@@ -74,6 +79,7 @@ def trim_history(
     model: Runnable[Any, AIMessage],
     max_tokens: int,
 ) -> list[BaseMessage]:
+    """Trim history to the token budget while keeping a valid conversation shape."""
     return trim_messages(
         history,
         max_tokens=max_tokens,
@@ -84,6 +90,10 @@ def trim_history(
 
 
 def _chat_model(model: Runnable[Any, AIMessage] | BaseLanguageModel) -> BaseLanguageModel:
+    """Unwrap runnable bindings until a token-counting chat model is reached."""
+    if isinstance(model, RunnableWithFallbacks):
+        return _chat_model(model.runnable)
+
     if isinstance(model, RunnableBindingBase):
         return _chat_model(model.bound)
 

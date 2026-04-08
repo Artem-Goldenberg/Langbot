@@ -358,6 +358,39 @@ def test_bot_buffer_memory_keeps_only_recent_messages():
     }
 
 
+def test_bot_buffer_memory_supports_fallback_wrapped_model():
+    primary_model = RecordingFakeModel(
+        responses=["first response", "second response", "third response"]
+    )
+    fallback_model = RecordingFakeModel(responses=["unused fallback"])
+    classifier_model = FixedClassificationModel(
+        Classification(
+            request_type=RequestType.question,
+            confidence=0.99,
+            reasoning="fixed",
+        )
+    )
+    bot = Bot(
+        primary_model.with_fallbacks([fallback_model]),
+        memory_type=MemoryType.buffer,
+        classifier_model=classifier_model,
+        max_context_tokens=4,
+    )
+
+    bot.process("first input")
+    bot.process("second input")
+    response = bot.process("third input")
+
+    assert response.content
+    assert [message.content for message in primary_model.seen_calls[3]] == [
+        f"{CHARACTER_PROMPTS[Character.friendly]}\n\n"
+        f"{REQUEST_PROMPTS[RequestType.question]}",
+        "second input",
+        "second response",
+        "third input",
+    ]
+
+
 def test_bot_summary_memory_uses_dedicated_summary_chain():
     model = RecordingFakeModel(responses=["first response", "second response"])
     summary_model = RecordingFakeModel(responses=["summary of first turn"])

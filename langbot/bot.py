@@ -34,11 +34,21 @@ DEFAULT_MAX_CONTEXT_TOKENS = 2_048
 
 
 class MemoryType(StrEnum):
+    """Available strategies for keeping chat history within model context."""
+
     buffer = auto()
     summary = auto()
 
 
 class Bot:
+    """Conversational bot with request routing, bounded chat memory, and tracing.
+
+    The bot keeps three kinds of state:
+    - chat history used as immediate conversational context
+    - an optional rolling summary used when history is compressed
+    - persistent entity memory that survives `clear_history()`
+    """
+
     prompt_template = ChatPromptTemplate.from_messages([
         ("system", "{character}\n\n{instructions}{summary}{entities}"),
         MessagesPlaceholder(variable_name="history", optional=True),
@@ -57,6 +67,7 @@ class Bot:
         max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
         log_path: str | None = None,
     ):
+        """Initialize the bot and build all runnable chains."""
         self.character = character
         self.memory_type = memory_type
 
@@ -106,6 +117,7 @@ class Bot:
         self.assemble()
 
     def switch_character(self, new_character: Character):
+        """Switch the active character prompt and rebuild dependent chains."""
         previous_character = self.character
         self.character = new_character
         self.assemble()
@@ -116,6 +128,7 @@ class Bot:
         )
 
     def switch_memory(self, new_memory: MemoryType):
+        """Switch the history-reduction strategy used on context overflow."""
         previous_memory = self.memory_type
         self.memory_type = new_memory
         self.trace_logger.log_event(
@@ -126,13 +139,16 @@ class Bot:
 
     @property
     def history(self) -> list[BaseMessage]:
+        """Return the current in-memory chat history."""
         return self._history.messages
 
     @property
     def entities(self) -> dict[str, Any]:
+        """Return the persistent entity memory collected about the user."""
         return self._entities
 
     def clear_history(self):
+        """Clear chat history and summary while preserving extracted entities."""
         self._remember_entities(source="clear_history")
         self._history.clear()
         previous_summary = self._summary
@@ -143,6 +159,7 @@ class Bot:
         )
 
     def process(self, input: str) -> AssistanceResponse:
+        """Handle one user message and return the final assistant response."""
         self.trace_logger.log_event("Started", user_input=input)
         chain_input = self._prepare_chain_input(input)
         result = self.chain.invoke(
@@ -165,6 +182,7 @@ class Bot:
         return response
 
     def stream_process(self, input: str) -> Iterator[BotStreamEvent]:
+        """Stream the assistant response while updating history on completion."""
         self.trace_logger.log_event("Started", user_input=input)
         chain_input = self._prepare_chain_input(input)
         classification_result = self.classifier.invoke(
@@ -201,6 +219,7 @@ class Bot:
         yield ResponseComplete(response=response)
 
     def assemble(self):
+        """Rebuild the main prompt and LCEL chains from current bot state."""
         self._refresh_main_prompt()
 
         self.classifier = classifier_chain(self.classifier_model).with_config(
@@ -208,11 +227,15 @@ class Bot:
         )
         router = self._request_type_router()
 
+        # The response chain expects the classifier output and routes the request
+        # to the prompt/model branch for the chosen request type.
         self.stream_response_chain = (
             _to_router_input
             | router
         ).with_config(run_name="response")
 
+        # `process()` uses one composed chain so tracing can observe the whole
+        # classifier -> router -> response flow as a single invocation.
         self.chain = (
             RunnablePassthrough.assign(classification_result=self.classifier)
             | RunnablePassthrough.assign(output=self.stream_response_chain)
@@ -228,6 +251,8 @@ class Bot:
         })
 
     def _prepare_chain_input(self, input: str) -> dict[str, Any]:
+        # History may be trimmed or summarized before every new turn so the
+        # prompt always sees context that fits inside the configured budget.
         self._history.messages = self._reduced_history()
         return {
             "input": input,
@@ -247,6 +272,8 @@ class Bot:
             )
             return history
 
+        # Entity extraction runs before reduction so durable user facts survive
+        # either trimming or full summary-based clearing of the raw transcript.
         self._remember_entities(source="history_reduction")
 
         match self.memory_type:
@@ -279,6 +306,8 @@ class Bot:
     def _set_summary(self, summary: str | None):
         previous_summary = self._summary
         self._summary = summary
+        # Summary and entity memory are interpolated directly into the system
+        # prompt, so any change requires rebuilding the prompt/response chains.
         self.assemble()
         if previous_summary != summary:
             self.trace_logger.log_event(
@@ -319,6 +348,8 @@ class Bot:
             )
             return
 
+        # Merge new entities into the persistent store instead of replacing it
+        # outright so partial extractions can refine previously known facts.
         self._entities = _merge_json_objects(self._entities, extracted)
         self.assemble()
         self.trace_logger.log_event(
@@ -330,6 +361,7 @@ class Bot:
         )
 
     def _refresh_main_prompt(self):
+        """Rebuild the prompt with the current character, summary, and entities."""
         self.main_prompt = self.prompt_template.partial(
             character=self._character_prompts[self.character],
             summary=_summary_suffix(self._summary),
@@ -337,6 +369,7 @@ class Bot:
         )
 
     def _trace_config(self) -> RunnableConfig:
+        """Return the callback config used for traced LangChain invocations."""
         return {
             "callbacks": [LangChainTraceCallbackHandler(logger=self.trace_logger)],
         }
@@ -359,6 +392,8 @@ def _entities_suffix(entities: dict[str, Any]) -> str:
 
 @chain
 def _to_router_input(data: dict[str, Any]) -> dict[str, Any]:
+    # RouterRunnable expects a `key` selecting the branch and an `input` payload
+    # passed to that branch unchanged.
     return {
         "key": data["classification_result"]["parsed"].request_type,
         "input": data,
@@ -420,6 +455,9 @@ def _finalize_stream_response(
     history: InMemoryChatMessageHistory,
     trace_logger: SessionTraceLogger,
 ) -> AssistanceResponse:
+    # Streaming accumulates chunks outside the main history. Finalization turns
+    # the last chunk into a normal AI message, writes it to history, and emits
+    # the same completion log structure as the non-streaming path.
     final_message = _final_message(streamed_message)
     response = _assistance_response_from_message(
         output=final_message,

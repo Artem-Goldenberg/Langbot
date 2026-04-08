@@ -1,5 +1,6 @@
 import re
 from typing import cast
+from unittest.mock import MagicMock, call, patch
 
 import httpx
 import openai
@@ -7,6 +8,7 @@ from langbot.bot import MemoryType
 from langbot.bot import Bot
 from langbot.cli import (
     build_parser,
+    create_bot,
     format_response,
     handle_command,
     print_welcome,
@@ -66,13 +68,78 @@ def test_build_parser_help_shows_plain_memory_names():
     help_text = build_parser().format_help()
 
     assert "--memory {buffer,summary}" in help_text
+    assert "--fallback-model FALLBACK_MODEL" in help_text
     assert "--log-file LOG_FILE" in help_text
 
 
 def test_build_parser_uses_timestamped_log_file_by_default():
     args = build_parser().parse_args([])
 
+    assert args.fallback_model == ""
     assert re.fullmatch(r"\.logs/\d{2}-\d{2}_\d{2}-\d{2}", args.log_file)
+
+
+def test_create_bot_wraps_primary_model_with_fallback():
+    primary_retry = MagicMock(name="primary_retry")
+    fallback_retry = MagicMock(name="fallback_retry")
+    combined_model = MagicMock(name="combined_model")
+    primary_retry.with_fallbacks.return_value = combined_model
+
+    primary_instance = MagicMock(name="primary_instance")
+    primary_instance.with_retry.return_value = primary_retry
+
+    fallback_instance = MagicMock(name="fallback_instance")
+    fallback_instance.with_retry.return_value = fallback_retry
+
+    with (
+        patch("langbot.cli.ChatOpenAI", side_effect=[primary_instance, fallback_instance]) as chat_openai,
+        patch("langbot.cli.Bot", autospec=True) as bot_cls,
+    ):
+        create_bot(
+            model_name="gpt-5-mini",
+            fallback_model_name="gpt-5",
+            character=Character.professional,
+            memory_type=MemoryType.summary,
+            log_path=".logs/test.log",
+        )
+
+    assert chat_openai.call_args_list == [
+        call(model="gpt-5-mini"),
+        call(model="gpt-5"),
+    ]
+    primary_instance.with_retry.assert_called_once()
+    fallback_instance.with_retry.assert_called_once()
+    assert primary_instance.with_retry.call_args.kwargs == {
+        "retry_if_exception_type": (
+            openai.RateLimitError,
+            openai.APITimeoutError,
+            openai.APIConnectionError,
+            openai.InternalServerError,
+        )
+    }
+    assert fallback_instance.with_retry.call_args.kwargs == {
+        "retry_if_exception_type": (
+            openai.RateLimitError,
+            openai.APITimeoutError,
+            openai.APIConnectionError,
+            openai.InternalServerError,
+        )
+    }
+    primary_retry.with_fallbacks.assert_called_once_with(
+        [fallback_retry],
+        exceptions_to_handle=(
+            openai.RateLimitError,
+            openai.APITimeoutError,
+            openai.APIConnectionError,
+            openai.InternalServerError,
+        ),
+    )
+    bot_cls.assert_called_once_with(
+        combined_model,
+        character=Character.professional,
+        memory_type=MemoryType.summary,
+        log_path=".logs/test.log",
+    )
 
 
 def test_handle_command_updates_character_memory_and_status():
